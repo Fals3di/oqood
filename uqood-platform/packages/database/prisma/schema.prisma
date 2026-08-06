@@ -1,0 +1,720 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// Multi-tenant Organizations
+// ============================================
+model Organization {
+  id        String   @id @default(uuid())
+  name      String
+  plan      String   @default("FREE") // FREE, STARTER, PRO, ENTERPRISE
+  settings  Json     @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users       User[]
+  partnerships Partnership[]
+  portfolios  Portfolio[]
+  assets      Asset[]
+  contracts   Contract[]
+  ledger      LedgerEntry[]
+  webhooks    WebhookSubscription[]
+  auditLogs   AuditLog[]
+
+  @@map("organizations")
+}
+
+// ============================================
+// Users & Authentication
+// ============================================
+model User {
+  id        String   @id @default(uuid())
+  orgId     String
+  email     String
+  password  String   // bcrypt hashed
+  role      UserRole @default(VIEWER)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [orgId], references: [id])
+  partnerships Partnership[]
+  auditLogs    AuditLog[]
+  ledgerEntries LedgerEntry[]
+
+  @@unique([orgId, email])
+  @@map("users")
+}
+
+enum UserRole {
+  OWNER
+  ADMIN
+  FULL_PARTNER
+  FINANCIAL_PARTNER
+  OPERATIONS_MANAGER
+  DATA_ENTRY
+  VIEWER
+  AUDITOR
+}
+
+// ============================================
+// Partnerships & Profit Sharing
+// ============================================
+model Partnership {
+  id         String        @id @default(uuid())
+  orgId      String
+  userId     String
+  role       UserRole
+  scope      Json          @default("{}") // JSONB for dynamic scope: { portfolios: [], contractTypes: [], all: boolean }
+  profitShare Decimal      @db.Decimal(5, 2) // Percentage 0-100
+  status     PartnershipStatus @default(ACTIVE)
+  createdAt  DateTime      @default(now())
+
+  organization Organization @relation(fields: [orgId], references: [id])
+  user         User         @relation(fields: [userId], references: [id])
+
+  @@unique([orgId, userId])
+  @@map("partnerships")
+}
+
+enum PartnershipStatus {
+  ACTIVE
+  INACTIVE
+  PENDING
+}
+
+// ============================================
+// Portfolios (Flexible Groupings)
+// ============================================
+model Portfolio {
+  id          String   @id @default(uuid())
+  orgId       String
+  name        String
+  type        String   // COMMERCIAL, RESIDENTIAL, PERSONAL, SUPPLIERS, EMPLOYEES, etc.
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  organization Organization @relation(fields: [orgId], references: [id])
+  assets       Asset[]
+  contracts    Contract[]
+
+  @@map("portfolios")
+}
+
+// ============================================
+// Assets (Optional - Independent Entities)
+// ============================================
+model Asset {
+  id            String   @id @default(uuid())
+  orgId         String
+  portfolioId   String?
+  assetType     AssetType // REAL_ESTATE, VEHICLE, EQUIPMENT, LICENSE, INTANGIBLE
+  name          String
+  description   String?
+  location      Json?     @db.JsonB // { lat, lng, address, unitNumber, etc. }
+  acquisitionData Json?   @db.JsonB // purchaseDate, cost, supplier, etc.
+  status        AssetStatus @default(AVAILABLE)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  organization Organization @relation(fields: [orgId], references: [id])
+  portfolio    Portfolio?   @relation(fields: [portfolioId], references: [id])
+  contracts    Contract[]
+
+  @@map("assets")
+}
+
+enum AssetType {
+  REAL_ESTATE
+  VEHICLE
+  EQUIPMENT
+  LICENSE
+  INTANGIBLE
+  OTHER
+}
+
+enum AssetStatus {
+  AVAILABLE
+  UNDER_CONTRACT
+  MAINTENANCE
+  SOLD
+  RETIRED
+}
+
+// ============================================
+// Contract Templates
+// ============================================
+model ContractTemplate {
+  id             String   @id @default(uuid())
+  orgId          String?  // null = system template, orgId = custom org template
+  typeName       String   // RENTAL, SUPPLY, CONTRACTING, MAINTENANCE, EMPLOYMENT, FREELANCE, LOAN, etc.
+  baseSchema     Json     @db.JsonB // JSON schema for base fields
+  defaultClauses Json     @db.JsonB // Default clauses structure
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  contracts Contract[]
+
+  @@unique([orgId, typeName])
+  @@map("contract_templates")
+}
+
+// ============================================
+// Contracts (Core Entity)
+// ============================================
+model Contract {
+  id            String   @id @default(uuid())
+  orgId         String
+  templateId    String?
+  assetId       String?
+  portfolioId   String?
+  contractNumber String
+  title         String
+  status        ContractStatus @default(DRAFT)
+  riskScore     Int?     // 0-100
+  aiSummary     String?
+  baseData      Json     @db.JsonB // Template-based base fields
+  customFields  Json     @db.JsonB // User-defined custom fields
+  startDate     DateTime
+  endDate       DateTime
+  autoRenew     Boolean  @default(false)
+  currency      String   @default("SAR")
+  totalValue    Decimal  @db.Decimal(15, 2)
+  responsibleUserId String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  organization   Organization      @relation(fields: [orgId], references: [id])
+  template       ContractTemplate? @relation(fields: [templateId], references: [id])
+  asset          Asset?            @relation(fields: [assetId], references: [id])
+  portfolio      Portfolio?        @relation(fields: [portfolioId], references: [id])
+  parties        ContractParty[]
+  addendums      ContractAddendum[]
+  clauses        ContractClause[]
+  paymentSchedule PaymentSchedule[]
+  expenses       Expense[]
+  cheques        Cheque[]
+  files          ContractFile[]
+  conversations  Conversation[]
+  alerts         Alert[]
+
+  @@unique([orgId, contractNumber])
+  @@map("contracts")
+}
+
+enum ContractStatus {
+  DRAFT
+  PENDING_APPROVAL
+  ACTIVE
+  SUSPENDED
+  EXPIRING_SOON
+  EXPIRED
+  RENEWED
+  CANCELLED
+  TERMINATED
+}
+
+// ============================================
+// Contract Parties (External)
+// ============================================
+model ContractParty {
+  id           String      @id @default(uuid())
+  contractId   String
+  partyType    PartyType   // INDIVIDUAL, COMPANY
+  name         String
+  taxNumber    String?
+  contactInfo  Json        @db.JsonB // { email, phone, address }
+  rating       Int?        // 0-5
+  role         PartyRole   // FIRST_PARTY, SECOND_PARTY, GUARANTOR, WITNESS
+  createdAt    DateTime    @default(now())
+
+  contract Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@map("contract_parties")
+}
+
+enum PartyType {
+  INDIVIDUAL
+  COMPANY
+}
+
+enum PartyRole {
+  FIRST_PARTY
+  SECOND_PARTY
+  GUARANTOR
+  WITNESS
+}
+
+// ============================================
+// Contract Addendums (Modifications)
+// ============================================
+model ContractAddendum {
+  id              String   @id @default(uuid())
+  contractId      String
+  addendumNumber Int
+  changeType      ChangeType // VALUE, DURATION, CLAUSES, PARTIES, OTHER
+  oldValues       Json     @db.JsonB
+  newValues       Json     @db.JsonB
+  effectiveDate   DateTime
+  reason          String?
+  status          ApprovalStatus @default(PENDING)
+  documentFile    String?  // S3 path to signed PDF
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  contract Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@unique([contractId, addendumNumber])
+  @@map("contract_addendums")
+}
+
+enum ChangeType {
+  VALUE
+  DURATION
+  CLAUSES
+  PARTIES
+  OTHER
+}
+
+// ============================================
+// Contract Clauses (Dynamic)
+// ============================================
+model ContractClause {
+  id          String   @id @default(uuid())
+  contractId  String
+  clauseType  ClauseType // MAINTENANCE, PAYMENT, INSURANCE, PENALTIES, DELIVERY, etc.
+  baseData    Json     @db.JsonB
+  customFields Json    @db.JsonB
+  order       Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  contract Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  details  ClauseDetail[]
+
+  @@map("contract_clauses")
+}
+
+enum ClauseType {
+  MAINTENANCE
+  PAYMENT
+  INSURANCE
+  PENALTIES
+  DELIVERY
+  WARRANTY
+  CONFIDENTIALITY
+  TERMINATION
+  DISPUTE_RESOLUTION
+  OTHER
+}
+
+// ============================================
+// Clause Details & Attachments
+// ============================================
+model ClauseDetail {
+  id         String   @id @default(uuid())
+  clauseId   String
+  detailType DetailType // INVOICE, IMAGE, DOCUMENT, NOTE
+  fileUrl    String?
+  metadata   Json     @db.JsonB
+  createdAt  DateTime @default(now())
+
+  clause ContractClause @relation(fields: [clauseId], references: [id], onDelete: Cascade)
+
+  @@map("clause_details")
+}
+
+enum DetailType {
+  INVOICE
+  IMAGE
+  DOCUMENT
+  NOTE
+  RECEIPT
+}
+
+// ============================================
+// Payment Schedule
+// ============================================
+model PaymentSchedule {
+  id            String        @id @default(uuid())
+  contractId    String
+  dueDate       DateTime
+  amount        Decimal       @db.Decimal(15, 2)
+  currency      String        @default("SAR")
+  status        PaymentStatus @default(PENDING)
+  paidDate      DateTime?
+  paymentMethod String?
+  notes         String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  contract Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@map("payment_schedules")
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  OVERDUE
+  CANCELLED
+  PARTIAL
+}
+
+// ============================================
+// Expenses
+// ============================================
+model Expense {
+  id          String        @id @default(uuid())
+  orgId       String
+  contractId  String?
+  assetId     String?
+  categoryId  String?
+  category    String
+  amount      Decimal       @db.Decimal(15, 2)
+  currency    String        @default("SAR")
+  receiptFile String?
+  status      ApprovalStatus @default(PENDING)
+  expenseDate DateTime
+  notes       String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  organization Organization @relation(fields: [orgId], references: [id])
+
+  @@map("expenses")
+}
+
+// ============================================
+// Cheques Management
+// ============================================
+model Cheque {
+  id          String        @id @default(uuid())
+  orgId       String
+  contractId  String?
+  number      String
+  bank        String
+  dueDate     DateTime
+  amount      Decimal       @db.Decimal(15, 2)
+  currency    String        @default("SAR")
+  direction   ChequeDirection // INCOMING, OUTGOING
+  status      ChequeStatus  @default(ISSUED)
+  payee       String?
+  notes       String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  organization Organization @relation(fields: [orgId], references: [id])
+
+  @@map("cheques")
+}
+
+enum ChequeDirection {
+  INCOMING
+  OUTGOING
+}
+
+enum ChequeStatus {
+  ISSUED
+  DEPOSITED
+  CLEARED
+  BOUNCED
+  CANCELLED
+  HELD
+}
+
+// ============================================
+// Ledger (Append-Only Financial Log)
+// ============================================
+model LedgerEntry {
+  id          String   @id @default(uuid())
+  orgId       String
+  entryType   LedgerEntryType // PAYMENT, EXPENSE, CHEQUE, PROFIT_DISTRIBUTION, ADDENDUM_ADJUSTMENT, REVERSAL
+  amount      Decimal  @db.Decimal(15, 2)
+  currency    String   @default("SAR")
+  sourceEntity String  // CONTRACT, EXPENSE, CHEQUE, etc.
+  sourceId    String
+  reversalOf  String?  // Reference to original entry if this is a reversal
+  metadata    Json     @db.JsonB
+  createdAt   DateTime @default(now())
+  createdBy   String
+
+  organization Organization @relation(fields: [orgId], references: [id])
+  creator      User         @relation(fields: [createdBy], references: [id])
+
+  @@index([orgId, sourceEntity, sourceId])
+  @@map("ledger_entries")
+}
+
+enum LedgerEntryType {
+  PAYMENT
+  EXPENSE
+  CHEQUE_DEPOSIT
+  CHEQUE_CLEAR
+  PROFIT_DISTRIBUTION
+  ADDENDUM_ADJUSTMENT
+  REVERSAL
+  ADJUSTMENT
+}
+
+// ============================================
+// Approval System (Maker-Checker)
+// ============================================
+model ApprovalPolicy {
+  id          String   @id @default(uuid())
+  orgId       String
+  entityType  String   // CONTRACT, EXPENSE, ASSET, ADDENDUM, etc.
+  condition   Json     @db.JsonB // { minAmount, maxAmount, contractType, etc. }
+  approvalMode ApprovalMode
+  approvers   Json     @db.JsonB // Array of user IDs or roles
+  level       Int      @default(1)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  organization Organization @relation(fields: [orgId], references: [id])
+
+  @@map("approval_policies")
+}
+
+enum ApprovalMode {
+  SINGLE_APPROVER
+  ANY_PARTNER
+  ALL_PARTNERS
+  MAJORITY
+  SEQUENTIAL
+}
+
+model ApprovalRequest {
+  id          String         @id @default(uuid())
+  orgId       String
+  entityType  String
+  entityId    String
+  submittedBy String
+  status      ApprovalStatus @default(PENDING)
+  currentLevel Int           @default(1)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  decisions ApprovalDecision[]
+
+  @@map("approval_requests")
+}
+
+model ApprovalDecision {
+  id         String         @id @default(uuid())
+  requestId  String
+  approverId String
+  decision   ApprovalDecision
+  comment    String?
+  createdAt  DateTime       @default(now())
+
+  request ApprovalRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@map("approval_decisions")
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  RETURNED
+  CANCELLED
+}
+
+enum ApprovalDecision {
+  APPROVE
+  REJECT
+  RETURN
+}
+
+// ============================================
+// Conversations & Messaging
+// ============================================
+model Conversation {
+  id        String   @id @default(uuid())
+  orgId     String
+  type      ConversationType // GENERAL, CONTRACT, CLAUSE, DIRECT
+  linkedId  String?  // contractId, clauseId, etc.
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages Message[]
+
+  @@map("conversations")
+}
+
+enum ConversationType {
+  GENERAL
+  CONTRACT
+  CLAUSE
+  DIRECT
+}
+
+model Message {
+  id          String   @id @default(uuid())
+  conversationId String
+  senderId    String
+  content     String
+  attachments Json?    @db.JsonB // Array of file URLs
+  mentions    String[] @default([])
+  isTask      Boolean  @default(false)
+  taskId      String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@map("messages")
+}
+
+// ============================================
+// Tasks
+// ============================================
+model Task {
+  id          String     @id @default(uuid())
+  orgId       String
+  assignedTo  String
+  linkedEntity String?   // entityType:entityId
+  title       String
+  description String?
+  status      TaskStatus @default(TODO)
+  dueDate     DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@map("tasks")
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  DONE
+  CANCELLED
+}
+
+// ============================================
+// Alerts & Notifications
+// ============================================
+model Alert {
+  id          String   @id @default(uuid())
+  orgId       String
+  entityId    String
+  entityType  String   // CONTRACT, PAYMENT, MAINTENANCE, CHEQUE
+  alertType   AlertType
+  triggerDate DateTime
+  channels    String[] @default([]) // EMAIL, PUSH, SMS
+  sent        Boolean  @default(false)
+  sentAt      DateTime?
+  createdAt   DateTime @default(now())
+
+  @@map("alerts")
+}
+
+enum AlertType {
+  CONTRACT_EXPIRING
+  PAYMENT_DUE
+  PAYMENT_OVERDUE
+  MAINTENANCE_DUE
+  CHEQUE_DUE
+  APPROVAL_PENDING
+  RISK_HIGH
+}
+
+// ============================================
+// Contract Files & OCR
+// ============================================
+model ContractFile {
+  id               String   @id @default(uuid())
+  contractId       String
+  fileName         String
+  fileType         String
+  fileSize         Int
+  s3Path           String
+  ocrText          String?  @db.Text
+  aiExtractedData  Json?    @db.JsonB
+  uploadedAt       DateTime @default(now())
+
+  contract Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@map("contract_files")
+}
+
+// ============================================
+// Webhooks & Integrations
+// ============================================
+model WebhookSubscription {
+  id        String   @id @default(uuid())
+  orgId     String
+  url       String
+  events    String[] @db.JsonB // Array of event types
+  secret    String
+  status    WebhookStatus @default(ACTIVE)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [orgId], references: [id])
+  deliveries WebhookDelivery[]
+
+  @@map("webhook_subscriptions")
+}
+
+enum WebhookStatus {
+  ACTIVE
+  SUSPENDED
+  DISABLED
+}
+
+model WebhookDelivery {
+  id             String        @id @default(uuid())
+  subscriptionId String
+  eventId        String
+  eventType      String
+  payload        Json          @db.JsonB
+  status         DeliveryStatus @default(PENDING)
+  responseCode   Int?
+  attempts       Int           @default(0)
+  lastAttemptAt  DateTime?
+  createdAt      DateTime      @default(now())
+
+  subscription WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId, status])
+  @@map("webhook_deliveries")
+}
+
+enum DeliveryStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  RETRYING
+}
+
+// ============================================
+// Audit Log (Immutable)
+// ============================================
+model AuditLog {
+  id        String   @id @default(uuid())
+  orgId     String
+  userId    String?
+  action    String
+  tableName String
+  oldData   Json?    @db.JsonB
+  newData   Json?    @db.JsonB
+  timestamp DateTime @default(now())
+  ipAddress String?
+
+  organization Organization @relation(fields: [orgId], references: [id])
+  user         User?         @relation(fields: [userId], references: [id])
+
+  @@index([orgId, timestamp])
+  @@index([tableName, action])
+  @@map("audit_logs")
+}

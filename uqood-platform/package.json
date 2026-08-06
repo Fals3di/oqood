@@ -1,0 +1,35 @@
+{
+  "name": "uqood-platform",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Smart Contract & Asset Management Platform - نظام عقود الذكي لإدارة وأرشفة العقود والأصول",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:api\"",
+    "dev:web": "npm run dev --workspace=@uqood/web",
+    "dev:api": "npm run dev --workspace=@uqood/api",
+    "build": "npm run build --workspaces",
+    "lint": "eslint . --ext .ts,.tsx",
+    "test": "vitest",
+    "test:db": "npm run test --workspace=@uqood/database",
+    "db:migrate": "npm run db:migrate --workspace=@uqood/database",
+    "db:generate": "npm run db:generate --workspace=@uqood/database",
+    "db:seed": "npm run db:seed --workspace=@uqood/database",
+    "db:studio": "npm run db:studio --workspace=@uqood/database"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "concurrently": "^8.2.2",
+    "eslint": "^8.55.0",
+    "prettier": "^3.1.0",
+    "typescript": "^5.3.2",
+    "vitest": "^1.0.4"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}
